@@ -1,5 +1,5 @@
 # lan-scan
-A script for scanning local area networks for clients and services/open ports.
+A script for scanning local area networks for clients and services/open ports
 
 ## Download
 `curl -LO miloszkusz.pl/lan-scan` 
@@ -7,6 +7,8 @@ A script for scanning local area networks for clients and services/open ports.
 or just download it from here
 
 ## Usage
+`chmod +x lan-scan`
+
 ```
 ./lan-scan [OPTIONS]
 
