@@ -1,0 +1,142 @@
+CPUS=$(ls -1 /dev/cpu | wc -l)
+IPS_PER_CPU=$((256/$CPUS))
+SCAN_SPEED=3
+DEPTH=1
+PORTS=100
+INTERFACE=""
+
+CLIENT_SCAN=false
+SERVICE_SCAN=false
+
+usage(){
+       echo Usage: $0 [OPTIONS]
+       echo
+       echo options:
+       echo " -i, --interface	Specify which network interface to use"
+       echo " -s, --speed		Scan speed [0-5]"
+       echo " -d, --depth		Scan depth [0-2]"
+       echo "			 0 host only	"
+       echo "			 1 xxx.xxx.xxx.*"
+       echo "			 2 xxx.xxx.*.*	"
+       echo " -p, --ports		Specify how many ports to scan with the service scan"
+       echo " -C, --clients		Perform a client scan"
+       echo " -S, --services		Perform a service scan"
+       echo " -h, --help		Display this message and exit"
+       exit
+}
+
+client_scan(){
+	TEMP_DIR=$(mktemp -d)
+	if [[ $DEPTH == 0 ]]
+	then
+		ip -4 -o addr show $INTERFACE | awk '!/^[0-9]*: ?lo|link\/ether/ {gsub("/", " "); print $4}' > $TEMP_DIR/clients.dat
+		return
+	fi
+	if [[ $INTERFACE == "" ]]
+	then 
+		INTERFACE=$(ip -4 -o addr | awk '!/^[0-9]*: ?lo|link\/ether/ {print $2}' | awk 'FNR==1 {print}')
+	fi
+	mkdir $TEMP_DIR/lock
+	for cpu in $(ls /dev/cpu)
+	do
+		range_min=$(($cpu * IPS_PER_CPU))
+		if [[ $(($cpu + 1)) == $CPUS ]]
+		then
+			range_max=255
+		else
+			range_max=$(($range_max + IPS_PER_CPU))
+		fi
+		touch $TEMP_DIR/lock/$cpu.lock
+		if [[ $DEPTH == 1 ]]
+		then 
+			ip=$(ip -4 -o addr show $INTERFACE | awk '!/^[0-9]*: ?lo|link\/ether/ {print $4}')
+			nmap --max-retries 1 -T $SCAN_SPEED -n -e $INTERFACE -oG - -sn ${ip%.*}.$range_min-$range_max | awk '/Up$/{print $2}' >> $TEMP_DIR/clients.dat && rm $TEMP_DIR/lock/$cpu.lock &
+		elif [[ $DEPTH == 2 ]]
+		then
+			ip=$(ip -4 -o addr show $INTERFACE | awk '!/^[0-9]*: ?lo|link\/ether/ {print $4}')
+			ip_shorter=${ip%.*}
+			nmap --max-retries 1 -T $SCAN_SPEED -e $INTERFACE -n -oG - -sn ${ip_shorter%.*}.$range_min-$range_max.* | awk '/Up$/{print $2}' >> $TEMP_DIR/clients.dat && rm $TEMP_DIR/lock/$cpu.lock &
+		else
+			echo Depth $DEPTH is out of range [0-2]
+			exit 1
+		fi
+	done
+	while [[ $(ls $TEMP_DIR/lock) != "" ]]
+	do
+		sleep 1
+	done
+	rm -rf $TEMP_DIR/lock
+}
+
+service_scan(){
+	if [[ $CLIENT_SCAN == true ]]
+	then 
+		:
+	else
+		client_scan
+	fi
+	nmap -T $SCAN_SPEED --open -oN $TEMP_DIR/services.dat -Pn -sV --top-ports $PORTS -iL $TEMP_DIR/clients.dat
+}
+
+while [[ $# -gt 0 ]]; do
+   key="$1"
+   case $key in
+     -h|--help)
+       usage
+       ;;
+     -s|--speed)
+       SCAN_SPEED=$2
+       shift
+       shift
+       ;;
+     -d|--depth)
+       DEPTH=$2
+       shift
+       shift
+       ;;
+     -p|--ports)
+       PORTS=$2
+       shift
+       shift
+       ;;
+     -i|--interface)
+       INTERFACE=$2
+       if [[ $(ip route) != *" $INTERFACE "* ]]
+       then
+	echo Interface $INTERFACE is not available
+	exit 1
+       fi
+       shift
+       shift
+       ;;
+     -C|--clients)
+       CLIENT_SCAN=true
+       shift
+       ;;
+     -S|--services)
+       SERVICE_SCAN=true
+       shift
+       ;;
+     *)
+       echo Unknown option: $1
+       exit
+       ;;
+   esac
+done
+
+
+if [[ $CLIENT_SCAN == true ]]
+then
+	client_scan
+	cat $TEMP_DIR/clients.dat
+fi
+
+if [[ $SERVICE_SCAN == true ]]
+then
+	service_scan
+fi
+
+if [[ $SERVICE_SCAN == false && $CLIENT_SCAN == false ]]
+then
+	usage
+fi
